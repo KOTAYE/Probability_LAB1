@@ -14,9 +14,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Work breakdown
 
--   *Name1 Surname1*:
--   *Name2 Surname2*:
--   *Name3 Surname3*:
+-   *Name1 Surname1*: Viktor Syrotiuk
+-   *Name2 Surname2*: Olena Dovbenchuk
+-   *Name3 Surname3*: Maksym Prokopets
 
 ## Introduction
 
@@ -143,11 +143,27 @@ library(ggplot2)
 ```{r}
 list.files(getwd())
 list.files("data/0-authors")
+list.files("data/1-discrimination")
+list.files("data/2-fake_news")
+list.files("data/3-sentiment")
+list.files("data/4-spam")
 ```
 
 ```{r}
 test_path <- "data/0-authors/test.csv"
 train_path <- "data/0-authors/train.csv"
+
+test_path1  <- "data/1-discrimination/test.csv"
+train_path1 <- "data/1-discrimination/train.csv"
+
+test_path2  <- "data/2-fake_news/test.csv"
+train_path2 <- "data/2-fake_news/train.csv"
+
+test_path3  <- "data/3-sentiment/test.csv"
+train_path3 <- "data/3-sentiment/train.csv"
+
+test_path4  <- "data/4-spam/test.csv"
+train_path4 <- "data/4-spam/train.csv"
 
 stop_words <- read_file("stop_words.txt")
 # https://stackoverflow.com/questions/27195912/why-does-strsplit-return-a-list
@@ -161,11 +177,17 @@ test <-  read.csv(file = test_path, stringsAsFactors = FALSE)
 ```
 
 ```{r}
-# note the power functional features of R bring us! 
 tidy_text <- unnest_tokens(train, 'splitted', 'text', token="words") %>%
              filter(!splitted %in% stop_words)
 
 tidy_text %>% count(splitted,sort=TRUE)
+
+tidy_text <- tidy_text %>%
+  filter(!splitted %in% splitted_stop_words) %>%
+  rename(word = splitted)
+
+word_counts <- tidy_text %>%
+  count(word, sort = TRUE)
 ```
 
 ## Data visualization
@@ -174,6 +196,40 @@ Each time you work with some data, you need to understand it before you
 start processing it. R has very powerful tools to make nice plots and
 visualization. Show what are the most common words for negative and
 positive examples as a histogram, word cloud etc. Be creative!
+
+```{r}
+top_words <- tidy_text %>%
+  group_by(author, word) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  group_by(author) %>%
+  slice_max(n, n = 20) %>%
+  ungroup()
+
+head(top_words)
+
+
+```
+
+```{r}
+ggplot(top_words, aes(x = reorder(word, n), y = n, fill = author)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~author, scales = "free_y") +
+  coord_flip() +
+  labs(x = "Words", y = "Frequency", title = "Top Words by Author") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 12))
+
+```
+
+```{r}
+ggplot(top_words, aes(x = 1, y = n, label = word, size = n, color = author)) +
+  geom_text(check_overlap = TRUE) +
+  facet_wrap(~author, scales = "free") +
+  theme_void() +
+  labs(title = "Word Cloud by Author") +
+  scale_size_continuous(range = c(4, 12))
+
+```
 
 ## Classifier implementation
 
