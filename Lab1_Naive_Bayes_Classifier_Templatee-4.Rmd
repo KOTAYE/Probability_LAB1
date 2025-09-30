@@ -150,20 +150,9 @@ list.files("data/4-spam")
 ```
 
 ```{r}
-test_path <- "data/0-authors/test.csv"
-train_path <- "data/0-authors/train.csv"
 
-test_path1  <- "data/1-discrimination/test.csv"
-train_path1 <- "data/1-discrimination/train.csv"
-
-test_path2  <- "data/2-fake_news/test.csv"
-train_path2 <- "data/2-fake_news/train.csv"
-
-test_path3  <- "data/3-sentiment/test.csv"
-train_path3 <- "data/3-sentiment/train.csv"
-
-test_path4  <- "data/4-spam/test.csv"
-train_path4 <- "data/4-spam/train.csv"
+test_path  <- "data/1-discrimination/test.csv"
+train_path <- "data/1-discrimination/train.csv"
 
 stop_words <- read_file("stop_words.txt")
 # https://stackoverflow.com/questions/27195912/why-does-strsplit-return-a-list
@@ -177,8 +166,8 @@ test <-  read.csv(file = test_path, stringsAsFactors = FALSE)
 ```
 
 ```{r}
-tidy_text <- unnest_tokens(train, 'splitted', 'text', token="words") %>%
-             filter(!splitted %in% stop_words)
+tidy_text <- unnest_tokens(train, 'splitted', 'tweet', token = "words") %>%
+  filter(!splitted %in% stop_words)
 
 tidy_text %>% count(splitted,sort=TRUE)
 
@@ -199,7 +188,7 @@ positive examples as a histogram, word cloud etc. Be creative!
 
 ```{r}
 top_words <- tidy_text %>%
-  group_by(author, word) %>%
+  group_by(label, word) %>%
   summarise(n = n(), .groups = 'drop') %>%
   group_by(author) %>%
   slice_max(n, n = 20) %>%
