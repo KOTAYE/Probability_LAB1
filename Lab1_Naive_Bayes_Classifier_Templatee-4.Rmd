@@ -190,7 +190,7 @@ positive examples as a histogram, word cloud etc. Be creative!
 top_words <- tidy_text %>%
   group_by(label, word) %>%
   summarise(n = n(), .groups = 'drop') %>%
-  group_by(author) %>%
+  group_by(label) %>%
   slice_max(n, n = 20) %>%
   ungroup()
 
@@ -200,22 +200,22 @@ head(top_words)
 ```
 
 ```{r}
-ggplot(top_words, aes(x = reorder(word, n), y = n, fill = author)) +
+ggplot(top_words, aes(x = reorder(word, n), y = n, fill = label)) +
   geom_col(show.legend = FALSE) +
-  facet_wrap(~author, scales = "free_y") +
+  facet_wrap(~label, scales = "free_y") +
   coord_flip() +
-  labs(x = "Words", y = "Frequency", title = "Top Words by Author") +
+  labs(x = "Words", y = "Frequency", title = "Top Words by Label") +
   theme_minimal() +
   theme(strip.text = element_text(size = 12))
 
 ```
 
 ```{r}
-ggplot(top_words, aes(x = 1, y = n, label = word, size = n, color = author)) +
+ggplot(top_words, aes(x = 1, y = n, label = word, size = n, color = label)) +
   geom_text(check_overlap = TRUE) +
-  facet_wrap(~author, scales = "free") +
+  facet_wrap(~label, scales = "free") +
   theme_void() +
-  labs(title = "Word Cloud by Author") +
+  labs(title = "Word Cloud by Label") +
   scale_size_continuous(range = c(4, 12))
 
 ```
@@ -224,38 +224,135 @@ ggplot(top_words, aes(x = 1, y = n, label = word, size = n, color = author)) +
 
 ```{r}
 naiveBayes <- setRefClass("naiveBayes",
-                          
-       # here it would be wise to have some vars to store intermediate result
-       # frequency dict etc. Though pay attention to bag of words! 
-       fields = list(),
-       methods = list(
-                    # prepare your training data as X - bag of words for each of your
-                    # messages and corresponding label for the message encoded as 0 or 1 
-                    # (binary classification task)
-                    fit = function(X, y)
-                    {
-                         # TODO
-                    },
-                    
-                    # return prediction for a single message 
-                    predict = function(message)
-                    {
-                         # TODO
-                    },
-                    
-                    # score you test set so to get the understanding how well you model
-                    # works.
-                    # look at f1 score or precision and recall
-                    # visualize them 
-                    # try how well your model generalizes to real world data! 
-                    score = function(X_test, y_test)
-                    {
-                         # TODO
-                    }
-))
+  fields = list(
+    word_probs = "list",
+    class_probs = "numeric",
+    classes = "character",
+    vocab = "character"
+  ),
+  
+  methods = list(
+    fit = function(X, y) {
+      classes <<- as.character(unique(y))
+      class_counts <- table(y)
+      class_probs <<- as.numeric(class_counts / sum(class_counts))
+      names(class_probs) <<- names(class_counts)
+      vocab <<- unique(X$word)
+      word_probs <<- list()
+      
+      for(cl in classes) {
+        words_cl <- X %>% filter(label == cl)
+        word_counts <- table(words_cl$word)
+        total <- sum(word_counts)
+        probs <- as.numeric(word_counts) / total
+        names(probs) <- names(word_counts)
+        word_probs[[cl]] <<- probs
+      }
+    },
+    
+    predict = function(message) {
+      tokens <- data.frame(tweet = message, stringsAsFactors = FALSE) %>%
+        unnest_tokens(word, tweet, token = "words")
+      
+      if(exists("stop_words", envir = .GlobalEnv)) {
+        tokens <- tokens %>% filter(!word %in% stop_words)
+      }
+      
+      if(exists("splitted_stop_words", envir = .GlobalEnv)) {
+        tokens <- tokens %>% filter(!word %in% splitted_stop_words)
+      }
+      
+      words <- tokens$word
+      
+      if(length(words) == 0) {
+        return(names(which.max(class_probs)))
+      }
+      
+      log_probs <- numeric(length(classes))
+      names(log_probs) <- classes
+      
+      for(cl in classes) {
+        log_prob <- log(class_probs[cl])
+        probs <- word_probs[[cl]]
+        
+        for(w in words) {
+          if(w %in% names(probs)) {
+            log_prob <- log_prob + log(probs[w])
+          } else {
+            log_prob <- log_prob + log(.Machine$double.eps)
+          }
+        }
+        
+        log_probs[cl] <- log_prob
+      }
+      
+      return(names(which.max(log_probs)))
+    },
+    
+    score = function(X_test, y_test) {
+      predictions <- sapply(X_test$tweet, function(msg) predict(msg))
+      predictions <- as.character(predictions)
+      y_test <- as.character(y_test)
+      
+      cm <- table(Predicted = predictions, Actual = y_test)
+      
+      class_counts <- table(y_test)
+      pos_class <- names(which.min(class_counts))
+      neg_class <- names(which.max(class_counts))
+      
+      TP <- ifelse(pos_class %in% rownames(cm), cm[pos_class, pos_class], 0)
+      FP <- ifelse(pos_class %in% rownames(cm), cm[pos_class, neg_class], 0)
+      FN <- ifelse(neg_class %in% rownames(cm), cm[neg_class, pos_class], 0)
+      TN <- ifelse(neg_class %in% rownames(cm), cm[neg_class, neg_class], 0)
+      
+      accuracy <- (TP + TN) / sum(cm)
+      precision <- ifelse((TP + FP) > 0, TP / (TP + FP), 0)
+      recall <- ifelse((TP + FN) > 0, TP / (TP + FN), 0)
+      F1 <- ifelse((precision + recall) > 0, 2 * precision * recall / (precision + recall), 0)
+      
+      error_details <- data.frame(
+        tweet = X_test$tweet,
+        predicted = predictions,
+        actual = y_test,
+        stringsAsFactors = FALSE
+      )
+      
+      return(list(
+        confusion_matrix = cm,
+        accuracy = accuracy,
+        precision = precision,
+        recall = recall,
+        F1 = F1,
+        predictions = predictions,
+        error_details = error_details,
+        pos_class = pos_class,
+        neg_class = neg_class
+      ))
+    }
+  )
+)
 
-model = naiveBayes()
-model$fit()
+set.seed(123)
+train_index <- sample(1:nrow(train), 0.8 * nrow(train))
+train_set <- train[train_index, ]
+test_set <- train[-train_index, ]
+
+tidy_train <- train_set %>%
+  unnest_tokens(word, tweet, token = "words") %>%
+  filter(!word %in% splitted_stop_words) %>%
+  select(word, label)
+
+model <- naiveBayes$new()
+model$fit(tidy_train, train_set$label)
+
+results <- model$score(test_set, test_set$label)
+
+cat(sprintf("Accuracy: %.3f\n", results$accuracy))
+cat(sprintf("Precision: %.3f\n", results$precision))
+cat(sprintf("Recall: %.3f\n", results$recall))
+cat(sprintf("F1: %.3f\n", results$F1))
+
+failure_cases <- results$error_details[results$error_details$predicted != results$error_details$actual, ]
 ```
 
 ## Measure effectiveness of your classifier
@@ -302,6 +399,82 @@ model$fit()
 -   Visualize them.
 
 -   Show failure cases.
+
+## Failure cases
+
+```{r}
+error_details <- results$error_details
+misclassified <- error_details[error_details$predicted != error_details$actual, ]
+FP <- misclassified[misclassified$error_type == "False Positive", ]
+FN <- misclassified[misclassified$error_type == "False Negative", ]
+
+cat(sprintf("Total misclassified: %d (%.1f%%)\n", nrow(misclassified), nrow(misclassified)/nrow(error_details)*100))
+```
+
+## Precision
+
+```{r}
+cat(sprintf("Precision: %.3f\n", results$precision))
+
+```
+
+## Recall
+
+```{r}
+cat(sprintf("Recall: %.3f\n", results$recall))
+```
+
+## F1
+
+```{r}
+cat(sprintf("F1 Score: %.3f\n", results$F1))
+```
+
+## Visualization
+
+```{r}
+metrics <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall", "F1"),
+  Value = c(results$accuracy, results$precision, results$recall, results$F1)
+)
+
+ggplot(metrics, aes(x = Metric, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = sprintf("%.3f", Value)), vjust = -0.5) +
+  ylim(0, 1) +
+  ggtitle("Model Performance Metrics")
+
+conf_matrix <- as.data.frame(results$confusion_matrix)
+ggplot(conf_matrix, aes(x = Actual, y = Freq, fill = Predicted)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = Freq), position = position_dodge(width = 0.9), vjust = -0.5) +
+  ggtitle("Confusion Matrix")
+
+top_words <- tidy_train %>%
+  count(word, sort = TRUE) %>%
+  head(20)
+
+ggplot(top_words, aes(x = reorder(word, n), y = n)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  ggtitle("Top 20 Most Frequent Words") +
+  xlab("Word") +
+  ylab("Frequency")
+
+# Error analysis plot
+error_details <- results$error_details
+misclassified <- error_details[error_details$predicted != error_details$actual, ]
+
+error_counts <- data.frame(
+  Type = c("Correct", "Misclassified"),
+  Count = c(nrow(error_details) - nrow(misclassified), nrow(misclassified))
+)
+
+ggplot(error_counts, aes(x = Type, y = Count, fill = Type)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Count), vjust = -0.5) +
+  ggtitle("Classification Results")
+```
 
 ## Conclusions
 
