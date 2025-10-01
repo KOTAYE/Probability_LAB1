@@ -100,6 +100,7 @@ library(tidytext)
 library(readr)
 library(dplyr)
 library(ggplot2)
+library(stringr)
 ```
 
 ## Outline of the work
@@ -142,38 +143,40 @@ library(ggplot2)
 
 ```{r}
 list.files(getwd())
-list.files("data/0-authors")
+
 list.files("data/1-discrimination")
-list.files("data/2-fake_news")
-list.files("data/3-sentiment")
-list.files("data/4-spam")
+
 ```
 
 ```{r}
 
-test_path  <- "data/1-discrimination/test.csv"
-train_path <- "data/1-discrimination/train.csv"
+test_path1  <- "data/1-discrimination/test.csv"
+train_path1 <- "data/1-discrimination/train.csv"
 
 stop_words <- read_file("stop_words.txt")
 # https://stackoverflow.com/questions/27195912/why-does-strsplit-return-a-list
 splitted_stop_words <- strsplit(stop_words, split='\n')
 splitted_stop_words <- splitted_stop_words[[1]]
+splitted_stop_words <- trimws(splitted_stop_words)
 ```
 
 ```{r}
-train <-  read.csv(file = train_path, stringsAsFactors = FALSE)
-test <-  read.csv(file = test_path, stringsAsFactors = FALSE)
+train <-  read.csv(file = train_path1, stringsAsFactors = FALSE)
+test <-  read.csv(file = test_path1, stringsAsFactors = FALSE)
 ```
 
 ```{r}
-tidy_text <- unnest_tokens(train, 'splitted', 'tweet', token = "words") %>%
-  filter(!splitted %in% stop_words)
-
-tidy_text %>% count(splitted,sort=TRUE)
-
-tidy_text <- tidy_text %>%
-  filter(!splitted %in% splitted_stop_words) %>%
-  rename(word = splitted)
+tidy_text <- train %>%
+  mutate(tweet = str_to_lower(tweet)) %>%
+  mutate(tweet = str_replace_all(tweet, "user", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "amp|\\bs\\b|\\bt\\b", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "[^a-z\\s]", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "\\s+", " ")) %>%
+  unnest_tokens(word, tweet, token = "words") %>%
+  filter(!word %in% splitted_stop_words,
+         word != "",
+         !is.na(word),
+         str_length(word)>1)  
 
 word_counts <- tidy_text %>%
   count(word, sort = TRUE)
@@ -189,9 +192,9 @@ positive examples as a histogram, word cloud etc. Be creative!
 ```{r}
 top_words <- tidy_text %>%
   group_by(label, word) %>%
-  summarise(n = n(), .groups = 'drop') %>%
+  summarise(word_count = n(), .groups = 'drop') %>%
   group_by(label) %>%
-  slice_max(n, n = 20) %>%
+  slice_max(word_count, n = 20) %>%
   ungroup()
 
 head(top_words)
@@ -200,27 +203,31 @@ head(top_words)
 ```
 
 ```{r}
-ggplot(top_words, aes(x = reorder(word, n), y = n, fill = label)) +
+ggplot(top_words, aes(x = reorder(word, word_count), y = word_count, fill = label)) +
   geom_col(show.legend = FALSE) +
   facet_wrap(~label, scales = "free_y") +
   coord_flip() +
-  labs(x = "Words", y = "Frequency", title = "Top Words by Label") +
+  labs(x = "Words", y = "Frequency", title = "Top Words by label") +
   theme_minimal() +
   theme(strip.text = element_text(size = 12))
 
 ```
 
 ```{r}
-ggplot(top_words, aes(x = 1, y = n, label = word, size = n, color = label)) +
+ggplot(top_words, aes(x = 1, y = word_count, label = word, size = word_count, color = label)) +
   geom_text(check_overlap = TRUE) +
   facet_wrap(~label, scales = "free") +
   theme_void() +
-  labs(title = "Word Cloud by Label") +
+  labs(title = "Word Cloud by label") +
   scale_size_continuous(range = c(4, 12))
 
 ```
 
 ## Classifier implementation
+
+```{r}
+head(tidy_text, 20)
+```
 
 ```{r}
 naiveBayes <- setRefClass("naiveBayes",
@@ -232,6 +239,7 @@ naiveBayes <- setRefClass("naiveBayes",
   ),
   
   methods = list(
+    # Train the Naive Bayes classifier
     fit = function(X, y) {
       classes <<- as.character(unique(y))
       class_counts <- table(y)
@@ -240,6 +248,7 @@ naiveBayes <- setRefClass("naiveBayes",
       vocab <<- unique(X$word)
       word_probs <<- list()
       
+      # Calculate word probabilities for each class
       for(cl in classes) {
         words_cl <- X %>% filter(label == cl)
         word_counts <- table(words_cl$word)
@@ -250,17 +259,20 @@ naiveBayes <- setRefClass("naiveBayes",
       }
     },
     
+    # Predict class for a single message
     predict = function(message) {
+      # Tokenize and preprocess the input message (same pipeline as training)
       tokens <- data.frame(tweet = message, stringsAsFactors = FALSE) %>%
-        unnest_tokens(word, tweet, token = "words")
-      
-      if(exists("stop_words", envir = .GlobalEnv)) {
-        tokens <- tokens %>% filter(!word %in% stop_words)
-      }
-      
-      if(exists("splitted_stop_words", envir = .GlobalEnv)) {
-        tokens <- tokens %>% filter(!word %in% splitted_stop_words)
-      }
+        mutate(tweet = str_to_lower(tweet)) %>%
+        mutate(tweet = str_replace_all(tweet, "user", " ")) %>%
+        mutate(tweet = str_replace_all(tweet, "amp|\\bs\\b|\\bt\\b", " ")) %>%
+        mutate(tweet = str_replace_all(tweet, "[^a-z\\s]", " ")) %>% 
+        mutate(tweet = str_replace_all(tweet, "\\s+", " ")) %>% 
+        unnest_tokens(word, tweet, token = "words") %>%
+        filter(!word %in% splitted_stop_words,
+               word != "",
+               !is.na(word),
+               str_length(word) > 1)
       
       words <- tokens$word
       
@@ -275,10 +287,12 @@ naiveBayes <- setRefClass("naiveBayes",
         log_prob <- log(class_probs[cl])
         probs <- word_probs[[cl]]
         
+        # Multiply word probabilities (sum logs for numerical stability)
         for(w in words) {
           if(w %in% names(probs)) {
             log_prob <- log_prob + log(probs[w])
           } else {
+            # Use small epsilon for unknown words to avoid log(0)
             log_prob <- log_prob + log(.Machine$double.eps)
           }
         }
@@ -289,13 +303,17 @@ naiveBayes <- setRefClass("naiveBayes",
       return(names(which.max(log_probs)))
     },
     
+    # Evaluate model performance on test data
     score = function(X_test, y_test) {
+      # Generate predictions for all test messages
       predictions <- sapply(X_test$tweet, function(msg) predict(msg))
       predictions <- as.character(predictions)
       y_test <- as.character(y_test)
       
+      # Create confusion matrix
       cm <- table(Predicted = predictions, Actual = y_test)
       
+      # Identify positive and negative classes
       class_counts <- table(y_test)
       pos_class <- names(which.min(class_counts))
       neg_class <- names(which.max(class_counts))
@@ -332,21 +350,41 @@ naiveBayes <- setRefClass("naiveBayes",
   )
 )
 
-set.seed(123)
-train_index <- sample(1:nrow(train), 0.8 * nrow(train))
-train_set <- train[train_index, ]
-test_set <- train[-train_index, ]
-
-tidy_train <- train_set %>%
+# Preprocess training data
+tidy_train <- train %>%
+  mutate(tweet = str_to_lower(tweet)) %>%
+  mutate(tweet = str_replace_all(tweet, "user", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "amp|\\bs\\b|\\bt\\b", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "[^a-z\\s]", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "\\s+", " ")) %>%
   unnest_tokens(word, tweet, token = "words") %>%
-  filter(!word %in% splitted_stop_words) %>%
+  filter(!word %in% splitted_stop_words,
+         word != "",
+         !is.na(word),
+         str_length(word)>1) %>%
   select(word, label)
 
+# Preprocess test data
+tidy_test <- test %>%
+  mutate(tweet = str_to_lower(tweet)) %>%
+  mutate(tweet = str_replace_all(tweet, "user", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "amp|\\bs\\b|\\bt\\b", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "[^a-z\\s]", " ")) %>%
+  mutate(tweet = str_replace_all(tweet, "\\s+", " ")) %>%
+  unnest_tokens(word, tweet, token = "words") %>%
+  filter(!word %in% splitted_stop_words,
+         word != "",
+         !is.na(word),
+         str_length(word)>1)
+
+# Train model on ALL training data
 model <- naiveBayes$new()
-model$fit(tidy_train, train_set$label)
+model$fit(tidy_train, train$label)
 
-results <- model$score(test_set, test_set$label)
+# Test on REAL test set (test.csv)
+results <- model$score(test, test$label)
 
+cat("TEST SET RESULTS (test.csv)\n")
 cat(sprintf("Accuracy: %.3f\n", results$accuracy))
 cat(sprintf("Precision: %.3f\n", results$precision))
 cat(sprintf("Recall: %.3f\n", results$recall))
@@ -396,41 +434,21 @@ failure_cases <- results$error_details[results$error_details$predicted != result
     link](https://cohere.com/blog/classification-eval-metrics) to find
     more information about metrics.**
 
--   Visualize them.
-
--   Show failure cases.
-
-## Failure cases
+### Failure Cases
 
 ```{r}
-error_details <- results$error_details
-misclassified <- error_details[error_details$predicted != error_details$actual, ]
-FP <- misclassified[misclassified$error_type == "False Positive", ]
-FN <- misclassified[misclassified$error_type == "False Negative", ]
+errors <- results$error_details[results$error_details$predicted != results$error_details$actual, ]
+classes <- unique(c(results$error_details$predicted, results$error_details$actual))
 
-cat(sprintf("Total misclassified: %d (%.1f%%)\n", nrow(misclassified), nrow(misclassified)/nrow(error_details)*100))
+FP <- sum(results$error_details$predicted == classes[1] & results$error_details$actual == classes[2])
+FN <- sum(results$error_details$predicted == classes[2] & results$error_details$actual == classes[1])
+
+cat(sprintf("Errors: %d/%d cases (%.1f%%) - False Positives: %d, False Negatives: %d\n", 
+            nrow(errors), nrow(results$error_details),
+            nrow(errors)/nrow(results$error_details)*100, FP, FN))
 ```
 
-## Precision
-
-```{r}
-cat(sprintf("Precision: %.3f\n", results$precision))
-
-```
-
-## Recall
-
-```{r}
-cat(sprintf("Recall: %.3f\n", results$recall))
-```
-
-## F1
-
-```{r}
-cat(sprintf("F1 Score: %.3f\n", results$F1))
-```
-
-## Visualization
+### Visualization
 
 ```{r}
 metrics <- data.frame(
@@ -450,16 +468,19 @@ ggplot(conf_matrix, aes(x = Actual, y = Freq, fill = Predicted)) +
   geom_text(aes(label = Freq), position = position_dodge(width = 0.9), vjust = -0.5) +
   ggtitle("Confusion Matrix")
 
-top_words <- tidy_train %>%
+# Top words visualization - corrected sorting
+top_words <- tidy_test %>%
   count(word, sort = TRUE) %>%
-  head(20)
+  head(20) %>%
+  arrange(n)  # Sort by frequency for proper bar order
 
 ggplot(top_words, aes(x = reorder(word, n), y = n)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   coord_flip() +
   ggtitle("Top 20 Most Frequent Words") +
   xlab("Word") +
-  ylab("Frequency")
+  ylab("Frequency") +
+  theme_minimal()
 
 # Error analysis plot
 error_details <- results$error_details
@@ -471,20 +492,75 @@ error_counts <- data.frame(
 )
 
 ggplot(error_counts, aes(x = Type, y = Count, fill = Type)) +
-  geom_bar(stat = "identity") +
+  geom_bar(stat = "identity") + 
   geom_text(aes(label = Count), vjust = -0.5) +
   ggtitle("Classification Results")
 ```
 
 ## Conclusions
 
-Summarize your work by explaining in a few sentences the points listed
-below.
+In this work, we implemented a Naive Bayes classifier for text
+classification. The method is grounded in Bayes’ theorem, which gives
+the conditional probability of a class given an observation:
 
--   Describe the method implemented in general. Show what are
-    mathematical foundations you are basing your solution on.
--   List pros and cons of the method. This should include the
-    limitations of your method, all the assumption you make about the
-    nature of your data etc.
--   Explain why accuracy is not a good choice for the base metrics for
-    classification tasks. Why F1 score is always preferable?
+$$\mathsf{P}(\mathrm{class}\mid \mathrm{observation})=\frac{\mathsf{P}(\mathrm{observation}\mid\mathrm{class})\mathsf{P}(\mathrm{class})}{\mathsf{P}(\mathrm{observation})}$$
+Under the naive independence assumption, we treat all features (words)
+as conditionally independent given the class. This allows us to compute
+the likelihood of a message as a product of single-word probabilities,
+which can be estimated from data. Our implementation followed this
+probabilistic reasoning step by step:
+
+- The fit method corresponds to estimating the prior probabilities 𝑃 (
+class ) P(class) from the class frequencies and the likelihood
+probabilities 𝑃 ( word ∣ class ) P(word∣class) from relative word
+frequencies in each class. This is essentially constructing an empirical
+probability distribution.
+
+- The predict method applies Bayes’ theorem to a new message. It tokenizes
+the text into words (features) and computes the posterior probability 𝑃
+( class ∣ message ) P(class∣message) by multiplying the prior with the
+conditional probabilities of the observed words. For numerical
+stability, this multiplication is performed as a sum of logarithms,
+which is equivalent in probability theory to adding log-likelihoods.
+
+- The score method evaluates predictions against the true labels by
+constructing a confusion matrix. This matrix allows us to calculate
+standard measures such as accuracy, precision, recall, and F1 score,
+which in probability theory are related to conditional probabilities of
+correct and incorrect predictions (for example, precision is an estimate
+of 𝑃 ( true positive ∣ predicted positive )
+P(true positive∣predicted positive)).
+
+In this way, every part of the Naive Bayes class directly reflects
+concepts from probability theory: priors, likelihoods, posteriors, and
+evaluation through conditional probabilities.
+    
+## Pros and Cons of Naive Bayes
+
+**Advantages:**
+
+- Very simple and efficient to implement, even on large datasets.
+- Works well with high-dimensional data like text, because it reduces the problem to counting word frequencies.
+- Requires relatively little training data compared to more complex models.
+
+**Limitations:**
+
+- The independence assumption is rarely true in real language, since words are often correlated (e.g., “not good” has a very different meaning than the independent probabilities of “not” and “good”).
+- It does not capture word order or context (bag-of-words model).
+- Zero-probability problems may occur with unseen words, which we mitigated by using a very small epsilon.
+    
+## Why Accuracy Is Not Enough
+
+While accuracy measures the proportion of all correct predictions, it can be misleading in imbalanced datasets.  
+For example, if 90% of tweets are neutral, a model that always predicts “neutral” would still have 90% accuracy — even though it learned nothing useful.
+
+This is why **precision**, **recall**, and **F1 score** are important:
+
+- **Precision** focuses on the reliability of positive predictions  
+  \( Precision = \dfrac{TP}{TP + FP} \)
+- **Recall** measures the ability to detect all actual positives  
+  \( Recall = \dfrac{TP}{TP + FN} \)
+- **F1 score** combines both into a single balanced metric  
+  \( F1 = \dfrac{2 \times Precision \times Recall}{Precision + Recall} \)
+
+For classification tasks like discrimination detection, where both false negatives and false positives are critical, the **F1 score** is a much more informative metric than accuracy alone.
